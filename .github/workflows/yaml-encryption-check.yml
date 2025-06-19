@@ -202,3 +202,299 @@ jobs:
           echo "⚠️ Action failed due to unencrypted files in secret folder"
           exit 1
         fi
+
+  validate-kubernetes-yaml:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up kubeval
+      run: |
+        # Download and install kubeval
+        wget https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz
+        tar xf kubeval-linux-amd64.tar.gz
+        sudo mv kubeval /usr/local/bin/
+        chmod +x /usr/local/bin/kubeval
+        
+        # Verify installation
+        kubeval --version
+    
+    - name: Find Kubernetes YAML files
+      id: find-k8s-files
+      run: |
+        # Find all YAML files that might be Kubernetes manifests
+        # Look for files with common k8s patterns
+        K8S_FILES=$(find . -name "*.yaml" -o -name "*.yml" | grep -E "(k8s|kubernetes|manifests|deployment|service|ingress|configmap|secret)" | head -20 || true)
+        
+        # Also check for files with k8s resource definitions in their content
+        ALL_YAML_FILES=$(find . -name "*.yaml" -o -name "*.yml" | head -50)
+        
+        echo "Checking for Kubernetes resource files..."
+        DETECTED_K8S_FILES=""
+        
+        for file in $ALL_YAML_FILES; do
+          if [ -f "$file" ] && [ -r "$file" ]; then
+            # Check if file contains Kubernetes resource indicators
+            if grep -l "apiVersion:\|kind:" "$file" >/dev/null 2>&1; then
+              echo "Found K8s resource file: $file"
+              DETECTED_K8S_FILES="$DETECTED_K8S_FILES $file"
+            fi
+          fi
+        done
+        
+        # Combine both methods
+        ALL_K8S_FILES="$K8S_FILES $DETECTED_K8S_FILES"
+        
+        if [ -n "$ALL_K8S_FILES" ]; then
+          echo "k8s_files_found=true" >> $GITHUB_OUTPUT
+          echo "files_list<<EOF" >> $GITHUB_OUTPUT
+          echo "$ALL_K8S_FILES" | tr ' ' '\n' | sort -u | grep -v '^ >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        else
+          echo "k8s_files_found=false" >> $GITHUB_OUTPUT
+          echo "No Kubernetes YAML files found"
+        fi
+    
+    - name: Validate Kubernetes YAML files
+      if: steps.find-k8s-files.outputs.k8s_files_found == 'true'
+      id: kubeval-check
+      run: |
+        echo "🔍 Validating Kubernetes YAML files with kubeval..."
+        
+        VALIDATION_RESULTS=""
+        VALID_FILES=()
+        INVALID_FILES=()
+        TOTAL_FILES=0
+        
+        # Read files from the output
+        while IFS= read -r file; do
+          if [ -n "$file" ] && [ -f "$file" ]; then
+            TOTAL_FILES=$((TOTAL_FILES + 1))
+            echo ""
+            echo "📄 Validating: $file"
+            echo "----------------------------------------"
+            
+            # Run kubeval on the file
+            if kubeval "$file" 2>&1; then
+              echo "✅ VALID: $file"
+              VALID_FILES+=("$file")
+            else
+              echo "❌ INVALID: $file"
+              INVALID_FILES+=("$file")
+            fi
+          fi
+        done <<< "${{ steps.find-k8s-files.outputs.files_list }}"
+        
+        # Export results
+        echo "TOTAL_K8S_FILES=$TOTAL_FILES" >> $GITHUB_ENV
+        echo "VALID_K8S_FILES=${#VALID_FILES[@]}" >> $GITHUB_ENV
+        echo "INVALID_K8S_FILES=${#INVALID_FILES[@]}" >> $GITHUB_ENV
+        
+        # Export invalid files list
+        if [ ${#INVALID_FILES[@]} -gt 0 ]; then
+          echo "INVALID_FILES_LIST<<EOF" >> $GITHUB_ENV
+          printf '%s\n' "${INVALID_FILES[@]}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+        fi
+        
+        # Export valid files list
+        if [ ${#VALID_FILES[@]} -gt 0 ]; then
+          echo "VALID_FILES_LIST<<EOF" >> $GITHUB_ENV
+          printf '%s\n' "${VALID_FILES[@]}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+        fi
+        
+        echo ""
+        echo "📊 VALIDATION SUMMARY:"
+        echo "======================"
+        echo "Total Kubernetes YAML files: $TOTAL_FILES"
+        echo "Valid files: ${#VALID_FILES[@]}"
+        echo "Invalid files: ${#INVALID_FILES[@]}"
+        
+        # Set exit code
+        if [ ${#INVALID_FILES[@]} -gt 0 ]; then
+          exit 1
+        fi
+      continue-on-error: true
+    
+    - name: Set PR variables for kubeval
+      id: kubeval-pr-info
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          echo "pr_number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          echo "head_sha=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
+          echo "is_pr=true" >> $GITHUB_OUTPUT
+        else
+          echo "head_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "is_pr=false" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Create PR comment for valid K8s files
+      if: env.INVALID_K8S_FILES == '0' && env.VALID_K8S_FILES != '0' && steps.kubeval-pr-info.outputs.is_pr == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const comment = `## ⚓ Kubernetes YAML Validation - PASSED ✅
+          
+          All Kubernetes YAML files are valid and conform to the Kubernetes API schema!
+          
+          **Summary:**
+          - 📄 Total K8s files validated: ${process.env.TOTAL_K8S_FILES}
+          - ✅ Valid files: ${process.env.VALID_K8S_FILES}
+          - ❌ Invalid files: 0
+          
+          **Validated files:**
+          ${process.env.VALID_FILES_LIST.split('\n').map(f => f.trim()).filter(f => f).map(f => `- \`${f}\``).join('\n')}
+          
+          Your Kubernetes manifests are ready for deployment! 🚀`;
+          
+          await github.rest.issues.createComment({
+            issue_number: ${{ steps.kubeval-pr-info.outputs.pr_number }},
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+    
+    - name: Create PR comment for invalid K8s files
+      if: env.INVALID_K8S_FILES != '0' && steps.kubeval-pr-info.outputs.is_pr == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const invalidFiles = process.env.INVALID_FILES_LIST || '';
+          const invalidFilesList = invalidFiles.split('\n').filter(f => f.trim()).map(f => `- \`${f}\``).join('\n');
+          
+          const validFiles = process.env.VALID_FILES_LIST || '';
+          const validFilesList = validFiles.split('\n').filter(f => f.trim()).map(f => `- \`${f}\``).join('\n');
+          
+          const comment = `## ⚠️ Kubernetes YAML Validation - FAILED ❌
+          
+          **Validation Error:** Some Kubernetes YAML files failed validation against the Kubernetes API schema!
+          
+          **Summary:**
+          - 📄 Total K8s files checked: ${process.env.TOTAL_K8S_FILES}
+          - ✅ Valid files: ${process.env.VALID_K8S_FILES}
+          - ❌ **Invalid files: ${process.env.INVALID_K8S_FILES}**
+          
+          **❌ Invalid files:**
+          ${invalidFilesList}
+          
+          ${validFilesList ? `**✅ Valid files:**\n${validFilesList}\n` : ''}
+          
+          **🔧 How to fix:**
+          1. Review the kubeval output in the action logs for specific validation errors
+          2. Check for typos in field names, incorrect indentation, or invalid values
+          3. Ensure your YAML follows the Kubernetes API schema
+          4. Common issues:
+             - Incorrect \`apiVersion\` for your Kubernetes cluster
+             - Missing required fields
+             - Invalid resource specifications
+          5. Fix the issues and push your changes
+          
+          **📚 Resources:**
+          - [Kubernetes API Reference](https://kubernetes.io/docs/reference/)
+          - [Kubeval Documentation](https://github.com/instrumenta/kubeval)
+          
+          **🔒 Consider blocking merge until validation passes.**`;
+          
+          await github.rest.issues.createComment({
+            issue_number: ${{ steps.kubeval-pr-info.outputs.pr_number }},
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+    
+    - name: Create check for K8s validation results
+      if: steps.find-k8s-files.outputs.k8s_files_found == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const conclusion = process.env.INVALID_K8S_FILES === '0' ? 'success' : 'failure';
+          const title = process.env.INVALID_K8S_FILES === '0' 
+            ? 'All Kubernetes YAML files are valid' 
+            : 'Kubernetes YAML validation failed';
+          const summary = process.env.INVALID_K8S_FILES === '0'
+            ? `Successfully validated ${process.env.VALID_K8S_FILES} Kubernetes YAML files`
+            : `Found ${process.env.INVALID_K8S_FILES} invalid Kubernetes YAML files out of ${process.env.TOTAL_K8S_FILES} total`;
+          
+          await github.rest.checks.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            name: 'Kubernetes YAML Validation',
+            head_sha: '${{ steps.kubeval-pr-info.outputs.head_sha }}',
+            status: 'completed',
+            conclusion: conclusion,
+            output: {
+              title: title,
+              summary: summary,
+              text: process.env.INVALID_K8S_FILES === '0' 
+                ? `Valid files:\n${process.env.VALID_FILES_LIST || 'None'}`
+                : `Invalid files:\n${process.env.INVALID_FILES_LIST || 'None'}\n\nValid files:\n${process.env.VALID_FILES_LIST || 'None'}`
+            }
+          });
+          
+          if (process.env.INVALID_K8S_FILES !== '0') {
+            core.setFailed(`Found ${process.env.INVALID_K8S_FILES} invalid Kubernetes YAML files`);
+          }
+    
+    - name: Handle no K8s files case
+      if: steps.find-k8s-files.outputs.k8s_files_found == 'false'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          // Only comment if this is a pull request
+          if ('${{ steps.kubeval-pr-info.outputs.is_pr }}' === 'true') {
+            const comment = `## ⚓ Kubernetes YAML Validation - NO FILES ℹ️
+            
+            No Kubernetes YAML files found in this pull request.
+            
+            **Search criteria:**
+            - Files with paths containing: k8s, kubernetes, manifests, deployment, service, ingress, configmap, secret
+            - Files containing \`apiVersion:\` or \`kind:\` fields
+            
+            If you expected Kubernetes files to be validated, please check:
+            - File naming conventions
+            - File content includes proper Kubernetes resource definitions`;
+            
+            await github.rest.issues.createComment({
+              issue_number: ${{ steps.kubeval-pr-info.outputs.pr_number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+          }
+          
+          // Create a neutral check run
+          await github.rest.checks.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            name: 'Kubernetes YAML Validation',
+            head_sha: '${{ steps.kubeval-pr-info.outputs.head_sha }}',
+            status: 'completed',
+            conclusion: 'neutral',
+            output: {
+              title: 'No Kubernetes YAML files to validate',
+              summary: 'No Kubernetes YAML files found in this commit.',
+              text: 'This commit does not contain any files that appear to be Kubernetes manifests.'
+            }
+          });
+    
+    - name: Kubeval Summary
+      run: |
+        echo "=== Kubernetes YAML Validation Summary ==="
+        if [ "${{ steps.find-k8s-files.outputs.k8s_files_found }}" = "true" ]; then
+          echo "Total K8s files: ${TOTAL_K8S_FILES:-0}"
+          echo "Valid files: ${VALID_K8S_FILES:-0}"
+          echo "Invalid files: ${INVALID_K8S_FILES:-0}"
+          echo "Validation result: ${{ env.INVALID_K8S_FILES == '0' && 'PASSED' || 'FAILED' }}"
+          
+          if [ "${INVALID_K8S_FILES:-0}" != "0" ]; then
+            echo "⚠️ Kubeval validation failed due to invalid Kubernetes YAML files"
+            exit 1
+          fi
+        else
+          echo "No Kubernetes YAML files found to validate"
+        fi

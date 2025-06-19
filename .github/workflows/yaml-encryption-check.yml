@@ -1,0 +1,204 @@
+name: YAML Encryption Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'secret/**/*.yaml'
+      - 'secret/**/*.yml'
+  workflow_dispatch:  # Allow manual triggers for testing
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  check-yaml-encryption:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Debug context
+      run: |
+        echo "Event name: ${{ github.event_name }}"
+        echo "Repository: ${{ github.repository }}"
+        echo "SHA: ${{ github.sha }}"
+        echo "PR number: ${{ github.event.pull_request.number }}"
+        echo "PR head SHA: ${{ github.event.pull_request.head.sha }}"
+    
+    - name: Make script executable
+      run: chmod +x ./check-yaml-encryption.sh
+      
+    - name: Run YAML encryption check
+      id: encryption-check
+      run: |
+        ./check-yaml-encryption.sh
+        echo "script_exit_code=$?" >> $GITHUB_OUTPUT
+      continue-on-error: true
+    
+    - name: Set PR variables
+      id: pr-info
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          echo "pr_number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          echo "head_sha=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
+          echo "is_pr=true" >> $GITHUB_OUTPUT
+        else
+          echo "head_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "is_pr=false" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Create PR comment for encrypted files
+      if: env.UNENCRYPTED_COUNT == '0' && env.ENCRYPTED_COUNT != '0' && steps.pr-info.outputs.is_pr == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const comment = `## 🔒 YAML Encryption Check - PASSED ✅
+          
+          All YAML files in the \`secret\` folder are properly encrypted!
+          
+          **Summary:**
+          - 📁 Total encrypted files: ${process.env.ENCRYPTED_COUNT}
+          - ✅ All files are secure
+          
+          The pull request can be safely merged. 🚀`;
+          
+          await github.rest.issues.createComment({
+            issue_number: ${{ steps.pr-info.outputs.pr_number }},
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+    
+    - name: Create PR comment for unencrypted files
+      if: env.UNENCRYPTED_COUNT != '0' && steps.pr-info.outputs.is_pr == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const unencryptedFiles = process.env.UNENCRYPTED_FILES || '';
+          const filesList = unencryptedFiles.split('\n').filter(f => f.trim()).map(f => `- \`${f}\``).join('\n');
+          
+          const comment = `## 🚨 YAML Encryption Check - FAILED ❌
+          
+          **Security Warning:** Unencrypted YAML files detected in the \`secret\` folder!
+          
+          **Summary:**
+          - 📁 Total files checked: ${parseInt(process.env.ENCRYPTED_COUNT || '0') + parseInt(process.env.UNENCRYPTED_COUNT || '0')}
+          - ✅ Encrypted files: ${process.env.ENCRYPTED_COUNT || '0'}
+          - ❌ **Unencrypted files: ${process.env.UNENCRYPTED_COUNT || '0'}**
+          
+          **Unencrypted files found:**
+          ${filesList}
+          
+          **⚠️ Action Required:**
+          Please encrypt these files before merging this pull request. Files in the \`secret\` folder should always be encrypted for security purposes.
+          
+          **How to fix:**
+          1. Encrypt the files using your preferred encryption method (ansible-vault, sops, etc.)
+          2. Push the encrypted files to this branch
+          3. The check will run automatically again
+          
+          **🔒 Merge is currently blocked until all files are encrypted.**`;
+          
+          await github.rest.issues.createComment({
+            issue_number: ${{ steps.pr-info.outputs.pr_number }},
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+    
+    - name: Block merge if unencrypted files found
+      if: env.UNENCRYPTED_COUNT != '0'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          // Create a check run that fails, which will block merge
+          const checkRun = await github.rest.checks.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            name: 'YAML Encryption Validation',
+            head_sha: '${{ steps.pr-info.outputs.head_sha }}',
+            status: 'completed',
+            conclusion: 'failure',
+            output: {
+              title: 'Unencrypted YAML files detected',
+              summary: `Found ${process.env.UNENCRYPTED_COUNT} unencrypted YAML files in the secret folder.`,
+              text: `The following files need to be encrypted:\n\n${process.env.UNENCRYPTED_FILES || 'No files listed'}`
+            }
+          });
+          
+          // Also set the action as failed
+          core.setFailed(`Found ${process.env.UNENCRYPTED_COUNT} unencrypted YAML files in secret folder`);
+    
+    - name: Success check for encrypted files
+      if: env.UNENCRYPTED_COUNT == '0' && env.ENCRYPTED_COUNT != '0'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          // Create a successful check run
+          const checkRun = await github.rest.checks.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            name: 'YAML Encryption Validation',
+            head_sha: '${{ steps.pr-info.outputs.head_sha }}',
+            status: 'completed',
+            conclusion: 'success',
+            output: {
+              title: 'All YAML files are encrypted',
+              summary: `Successfully verified ${process.env.ENCRYPTED_COUNT} encrypted YAML files.`,
+              text: 'All YAML files in the secret folder are properly encrypted. ✅'
+            }
+          });
+    
+    - name: Handle no YAML files case
+      if: env.UNENCRYPTED_COUNT == '0' && env.ENCRYPTED_COUNT == '0'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          // Only comment if this is a pull request
+          if ('${{ steps.pr-info.outputs.is_pr }}' === 'true') {
+            const comment = `## 🔍 YAML Encryption Check - NO FILES ℹ️
+            
+            No YAML files found in the \`secret\` folder for this pull request.
+            
+            If you expected YAML files to be present, please verify the folder path and file extensions.`;
+            
+            await github.rest.issues.createComment({
+              issue_number: ${{ steps.pr-info.outputs.pr_number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+          }
+          
+          // Create a neutral check run
+          const checkRun = await github.rest.checks.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            name: 'YAML Encryption Validation',
+            head_sha: '${{ steps.pr-info.outputs.head_sha }}',
+            status: 'completed',
+            conclusion: 'neutral',
+            output: {
+              title: 'No YAML files to check',
+              summary: 'No YAML files found in the secret folder.',
+              text: 'This commit does not contain any YAML files in the secret folder.'
+            }
+          });
+    
+    - name: Summary
+      run: |
+        echo "=== YAML Encryption Check Summary ==="
+        echo "Encrypted files: ${ENCRYPTED_COUNT:-0}"
+        echo "Unencrypted files: ${UNENCRYPTED_COUNT:-0}"
+        echo "Check result: ${{ steps.encryption-check.outputs.script_exit_code == '0' && 'PASSED' || 'FAILED' }}"
+        
+        if [ "${UNENCRYPTED_COUNT:-0}" != "0" ]; then
+          echo "⚠️ Action failed due to unencrypted files in secret folder"
+          exit 1
+        fi

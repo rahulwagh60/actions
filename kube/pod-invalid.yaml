@@ -10,7 +10,7 @@ spec:
   containers:
     - name: dotfile-test-container
       image: registry.k8s.io/busybox
-      abc:
+      abcd:
         - ls
         - "-l"
         - "/etc/secret-volume"

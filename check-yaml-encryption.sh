@@ -5,7 +5,7 @@
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <file_path>"
-    echo "Example: $0 secret/secret2.yaml"
+    echo "Example: $0 ç"
     exit 1
 fi
 
@@ -41,50 +41,7 @@ elif echo "$FILE_TYPE" | grep -qi "gzip\|compressed"; then
 else
     echo "   ⚠️  File type doesn't indicate encryption"
 fi
-
-echo ""
-echo "🔍 Encryption Marker Analysis:"
-
-# Check for Ansible Vault
-if grep -q "^\$ANSIBLE_VAULT" "$FILE" 2>/dev/null; then
-    echo "   ✅ Ansible Vault marker found (\$ANSIBLE_VAULT)"
-elif grep -q "ansible-vault" "$FILE" 2>/dev/null; then
-    echo "   ✅ Ansible Vault reference found (ansible-vault)"
-else
-    echo "   ❌ No Ansible Vault markers"
-fi
-
-# Check for SOPS
-if grep -q "sops:" "$FILE" 2>/dev/null; then
-    echo "   ✅ SOPS marker found (sops:)"
-else
-    echo "   ❌ No SOPS markers"
-fi
-
-# Check for AGE
-if grep -q "age:" "$FILE" 2>/dev/null; then
-    echo "   ✅ AGE marker found (age:)"
-else
-    echo "   ❌ No AGE markers"
-fi
-
-# Check for PGP
-if grep -q "pgp:" "$FILE" 2>/dev/null; then
-    echo "   ✅ PGP marker found (pgp:)"
-elif grep -q "BEGIN PGP MESSAGE" "$FILE" 2>/dev/null; then
-    echo "   ✅ PGP message block found (BEGIN PGP MESSAGE)"
-elif grep -q "-----BEGIN PGP MESSAGE-----" "$FILE" 2>/dev/null; then
-    echo "   ✅ PGP message block found (-----BEGIN PGP MESSAGE-----)"
-else
-    echo "   ❌ No PGP markers"
-fi
-
-# Check for ENC markers
-if grep -q "ENC\[" "$FILE" 2>/dev/null; then
-    echo "   ✅ ENC[] marker found"
-else
-    echo "   ❌ No ENC[] markers"
-fi
+ß
 
 echo ""
 echo "🔍 Content Analysis:"
@@ -121,14 +78,9 @@ IS_ENCRYPTED=false
 # File type check
 if echo "$FILE_TYPE" | grep -qi "data\|encrypted\|binary\|gzip\|compressed"; then
     echo "   ✅ ENCRYPTED by file type"
-    IS_ENCRYPTED=true
+    IS_ENCRYPTED=trueß
 fi
-
-# Marker checks
-if grep -q "^\$ANSIBLE_VAULT\|^ansible-vault\|sops:\|age:\|pgp:\|BEGIN.*MESSAGE\|ENC\[" "$FILE" 2>/dev/null; then
-    echo "   ✅ ENCRYPTED by content markers"
-    IS_ENCRYPTED=true
-fi
+ß
 
 # Printable ratio check
 if [ -n "$FULL_SAMPLE" ] && [ "$TOTAL_COUNT" -gt 0 ]; then

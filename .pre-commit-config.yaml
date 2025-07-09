@@ -1,0 +1,63 @@
+# .pre-commit-config.yaml
+# Pre-commit hooks configuration for YAML validation
+
+repos:
+  # # Built-in hooks for general file hygiene
+  # - repo: https://github.com/pre-commit/pre-commit-hooks
+  #   rev: v4.4.0
+  #   hooks:
+  #     - id: trailing-whitespace
+  #     - id: end-of-file-fixer
+  #     - id: check-yaml
+  #       args: ['--unsafe']  # Allow custom YAML tags (like Ansible, SOPS)
+  #       exclude: ^secret/  # Skip secret files as they may be encrypted
+  #     - id: check-added-large-files
+  #       args: ['--maxkb=500']
+  #     - id: check-merge-conflict
+  #     - id: check-case-conflict
+
+  # Local custom hooks for specific validation
+  - repo: local
+    hooks:
+      # YAML Encryption Check - Only for secret folder
+      - id: yaml-encryption-check
+        name: Check YAML Encryption in Secret Folder
+        description: Ensures all YAML files in secret/ folder are encrypted
+        entry: .pre-commit-hooks/check-yaml-encryption.sh
+        language: script
+        files: ^secret/.*\.(yaml|yml)$
+        pass_filenames: true
+        stages: [pre-commit]
+        verbose: true
+
+      # # Kubernetes YAML Validation - For all YAML files
+      # - id: kubernetes-yaml-validation
+      #   name: Validate Kubernetes YAML Files
+      #   description: Validates Kubernetes manifests using kubeval
+      #   entry: .pre-commit-hooks/validate-kubernetes-yaml.sh
+      #   language: script
+      #   files: \.(yaml|yml)$
+      #   pass_filenames: true
+      #   stages: [pre-commit]
+      #   verbose: true
+
+  # # Optional: Additional YAML linting
+  # - repo: https://github.com/adrienverge/yamllint
+  #   rev: v1.32.0
+  #   hooks:
+  #     - id: yamllint
+  #       args: [--format, parsable, --strict]
+  #       exclude: ^secret/  # Skip encrypted files
+  #       # Custom yamllint config can be added in .yamllint
+
+# Global configuration
+default_stages: [pre-commit]
+fail_fast: false  # Run all hooks even if one fails
+
+# Optional: Exclude certain files globally
+exclude: |
+  (?x)^(
+    .*\.min\.(js|css)$|
+    .*\.lock$|
+    .*\.log$
+  )$
